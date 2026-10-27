@@ -64,9 +64,12 @@ const jobsReferring = (name) =>
   jobs.filter(([, job]) => secretsOf(job).has(name));
 const namesOf = (holders) => holders.map(([name]) => name).sort();
 const environmentOf = (job) => job.environment?.name ?? job.environment;
+// Any action but these two may run Node: they are the ones that run none of
+// the source's code.
 const runsNode = (step) =>
-  /^(pnpm|actions)\/(action-setup|setup-node)@/.test(step.uses ?? "") ||
-  /\b(pnpm|npm|npx|node|corepack|yarn)\b/.test(step.run ?? "");
+  (step.uses !== undefined &&
+    !/^actions\/(checkout|upload-artifact)@/.test(step.uses)) ||
+  /\b(pnpm|npm|npx|node(?:js)?|corepack|yarn)\b/.test(step.run ?? "");
 
 describe("the secret scan", () => {
   const names = (text) => [...secretReferences(text)].map(([name]) => name);
@@ -178,20 +181,37 @@ describe("the release workflow", () => {
     const [seal] = release.jobs.fetch.steps.filter((step) =>
       /\bopenssl enc\b/.test(step.run ?? ""),
     );
-    const at = (pattern) => {
-      const index = seal.run.search(pattern);
-      assert.notEqual(index, -1, `the seal step does not run ${pattern}`);
-      return index;
+    const lines = seal.run.split("\n").map((line) => line.trim());
+    const only = (pattern) => {
+      const found = lines.filter((line) => pattern.test(line));
+      assert.equal(
+        found.length,
+        1,
+        `the seal step runs ${pattern} ${found.length} times`,
+      );
+      return lines.indexOf(found[0]);
     };
-    const tar = at(/\btar\b/);
+    // A second selection (`sparse-checkout add`, `set` with more paths) would
+    // seal another module, and a tar input other than the repository root
+    // would leave out the root files `release:pack` needs.
+    const selects = only(/\bsparse-checkout\b/);
+    assert.equal(
+      lines[selects],
+      `git -C "$pinned" sparse-checkout set --cone modules/${MODULE}`,
+    );
+    const tar = only(/\btar\b/);
+    assert.match(lines[tar], /^tar -C "\$pinned" -czf - \. \|$/);
     for (const command of [
-      /fetch [^\n]*--filter=blob:none/,
-      new RegExp(`sparse-checkout set --cone modules/${MODULE}\n`),
-      /checkout [^\n]*FETCH_HEAD/,
-      /remote remove origin/,
+      /^git -C "\$pinned" fetch [^\n]*--filter=blob:none/,
+      /^git -C "\$pinned" checkout [^\n]*FETCH_HEAD$/,
+      /^git -C "\$pinned" remote remove origin$/,
     ]) {
-      assert.ok(at(command) < tar, `the seal step runs ${command} after tar`);
+      assert.ok(
+        only(command) < tar,
+        `the seal step runs ${command} after tar`,
+      );
     }
+    assert.ok(selects < only(/^git -C "\$pinned" checkout /));
   });
 
   it("hands the archive key to steps that run no Node, in their env", () => {
@@ -219,7 +239,7 @@ describe("the release workflow", () => {
 
   it("attests and publishes in a job that holds no secret", () => {
     for (const [name, job] of jobs) {
-      const publishes = ["id-token", "attestations", "contents"].some(
+      const publishes = ["id-token", "attestations", "contents", "packages"].some(
         (permission) => job.permissions?.[permission] === "write",
       );
       if (publishes) {

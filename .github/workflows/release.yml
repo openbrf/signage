@@ -316,7 +316,9 @@ jobs:
           subject-path: ${{ runner.temp }}/release/${{ needs.build.outputs.file }}
 
       # Created as a draft, so the tarball is attached before the release is
-      # published and becomes immutable.
+      # published and becomes immutable. A run that failed after the draft
+      # existed leaves it behind: the retry finds it by its tag and replaces
+      # its tarball with the one this run attested, then publishes it.
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -324,12 +326,16 @@ jobs:
           FILE: ${{ runner.temp }}/release/${{ needs.build.outputs.file }}
           COMMIT: ${{ needs.fetch.outputs.commit }}
         run: |
-          gh release create "$TAG" "$FILE" \
-            --repo "$GITHUB_REPOSITORY" \
-            --draft \
-            --verify-tag \
-            --title "$TAG" \
-            --notes "Release $TAG of digital signage for Open BRF, built from apteoab/openbrf-modules at $COMMIT, the commit source.json pins. Verify the tarball with: gh attestation verify $(basename "$FILE") --repo $GITHUB_REPOSITORY --source-ref refs/tags/$TAG"
+          existing="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName --jq '.[] | select(.tagName == env.TAG) | .tagName')"
+          if [ -z "$existing" ]; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --verify-tag \
+              --title "$TAG" \
+              --notes "Release $TAG of digital signage for Open BRF, built from apteoab/openbrf-modules at $COMMIT, the commit source.json pins. Verify the tarball with: gh attestation verify $(basename "$FILE") --repo $GITHUB_REPOSITORY --source-ref refs/tags/$TAG"
+          fi
+          gh release upload "$TAG" "$FILE" --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
 
       # What a catalog entry for this release states.
