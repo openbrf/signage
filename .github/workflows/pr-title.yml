@@ -38,7 +38,7 @@ jobs:
       - name: Lint PR title with commitlint
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: printf "%s\n" "$PR_TITLE" | pnpm exec commitlint
+        run: printf "%s\n" "$PR_TITLE" | pnpm exec commitlint --config commitlint.title.config.mjs
 
       # A pull request may land by rebase, so every commit is linted too.
       - name: Lint every commit with commitlint
